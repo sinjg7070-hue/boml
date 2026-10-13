@@ -2,7 +2,7 @@
 -- This script is not verified by rscripts.net. Deal with caution.
 -- [[ End Rscripts Risk Notice ]]
 
--- 🌸 AXR SCRIPT / FISHING - SAKURA EDITION (TIMER RESETTED) 🌸
+-- 🌸 AXR SCRIPT / FISHING - SAKURA EDITION (ACTIVE TIME ONLY & RESET) 🌸
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
@@ -31,11 +31,11 @@ local SaveFolder = "AXRScript_System"
 local DataFile = SaveFolder .. "/KeyTimerData.json"
 
 -- ==========================================
--- 🔄 타이머 키 초기화 처리
+-- 🔄 1. 모든 타이머 키 데이터 초기화
 -- ==========================================
 if isfile and isfile(DataFile) then
     pcall(function()
-        delfile(DataFile) -- 기존 기록 삭제 (초기화)
+        delfile(DataFile) -- 기존 사용 시간 및 블랙리스트 파일 삭제
     end)
 end
 
@@ -43,7 +43,7 @@ if makefolder and not isfolder(SaveFolder) then
     pcall(function() makefolder(SaveFolder) end)
 end
 
--- 로컬 시스템 데이터 로드/저장 함수
+-- 로컬 데이터 로드/저장 함수
 local function loadKeyData()
     if isfile and readfile and isfile(DataFile) then
         local success, result = pcall(function()
@@ -51,7 +51,7 @@ local function loadKeyData()
         end)
         if success and type(result) == "table" then return result end
     end
-    return { Blacklisted = false, FirstUsedTime = nil }
+    return {}
 end
 
 local function saveKeyData(data)
@@ -64,12 +64,19 @@ end
 
 local keyData = loadKeyData()
 
--- 키 정의
-local TIMER_KEY = "dop.8915"
+-- 키 및 유저 정의
 local DEV_KEY = "5.01po"
 local DEV_USER = "zxxdaswo"
-local isDevKey = false
-local timerDuration = 900 -- 15분 (초 단위)
+
+local TIMER_KEYS = {
+    ["5min.key"]   = 300,             -- 5분 키 (300초 사용 가능)
+    ["dop.8915"]   = 900,             -- 15분 키 (900초 사용 가능)
+    ["3month.key"] = 90 * 24 * 3600   -- 3개월 키 (7,776,000초 사용 가능)
+}
+
+local isDevMode = false
+local currentActiveKey = nil
+local activeDuration = 0
 
 -- 메인 ScreenGui 생성
 local ScreenGui = Instance.new("ScreenGui")
@@ -78,7 +85,7 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = CoreGui
 
 -- ==========================================
--- 1. 키 검증 GUI
+-- 2. 키 검증 GUI
 -- ==========================================
 local KeyFrame = Instance.new("Frame")
 KeyFrame.Name = "KeyFrame"
@@ -138,7 +145,7 @@ BtnCorner.CornerRadius = UDim.new(0, 6)
 BtnCorner.Parent = KeyBtn
 
 -- ==========================================
--- 2. 메인 스크립트 GUI
+-- 3. 메인 스크립트 GUI
 -- ==========================================
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
@@ -180,10 +187,10 @@ MainTitle.Font = Enum.Font.GothamBold
 MainTitle.TextXAlignment = Enum.TextXAlignment.Left
 MainTitle.Parent = TopBar
 
--- 우측 상단 타이머
+-- 우측 상단 타이머 레이블
 local TimerDisplay = Instance.new("TextLabel")
-TimerDisplay.Size = UDim2.new(0, 210, 1, 0)
-TimerDisplay.Position = UDim2.new(1, -245, 0, 0)
+TimerDisplay.Size = UDim2.new(0, 230, 1, 0)
+TimerDisplay.Position = UDim2.new(1, -265, 0, 0)
 TimerDisplay.BackgroundTransparency = 1
 TimerDisplay.Text = "⏳ 계산 중..."
 TimerDisplay.TextColor3 = Color3.fromRGB(255, 215, 0)
@@ -228,7 +235,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- 스크롤 및 버튼 목록
+-- 스크롤 및 토글 목록
 local Scroll = Instance.new("ScrollingFrame")
 Scroll.Size = UDim2.new(1, -20, 1, -55)
 Scroll.Position = UDim2.new(0, 10, 0, 48)
@@ -284,37 +291,57 @@ createToggle("🧪 자동 포션 사용", false, function(v) getgenv().autoPotio
 createToggle("🛡️ 안티 AFK (자리비움 방지)", false, function(v) getgenv().antiAfk = v end)
 createToggle("🎟️ 자동 프로모션 코드 입력", false, function(v) getgenv().autoCodes = v end)
 
--- 실시간 타이머 루프
+-- 실시간 타이머 포맷팅 함수
+local function formatTime(seconds)
+    if seconds >= 86400 then
+        local days = math.floor(seconds / 86400)
+        local hours = math.floor((seconds % 86400) / 3600)
+        return string.format("%d일 %d시간 남음", days, hours)
+    elseif seconds >= 3600 then
+        local hours = math.floor(seconds / 3600)
+        local mins = math.floor((seconds % 3600) / 60)
+        return string.format("%d시간 %d분 남음", hours, mins)
+    else
+        local mins = math.floor(seconds / 60)
+        local secs = seconds % 60
+        return string.format("%02d분 %02d초 남음", mins, secs)
+    end
+end
+
+-- ==========================================
+-- ⏳ 실시간 실제 사용(ON) 시간 차감 루프
+-- ==========================================
 local function startTimerLoop()
     task.spawn(function()
         while task.wait(1) do
-            if isDevKey then
+            if isDevMode then
                 TimerDisplay.Text = "👑 개발자 권한 (무제한)"
                 TimerDisplay.TextColor3 = Color3.fromRGB(155, 89, 182)
-            else
-                if keyData.FirstUsedTime then
-                    local elapsed = os.time() - keyData.FirstUsedTime
-                    local remaining = timerDuration - elapsed
+            elseif currentActiveKey and keyData[currentActiveKey] then
+                local kInfo = keyData[currentActiveKey]
+                
+                -- 스크립트 실행 중에만 사용 시간 1초 증가
+                kInfo.UsedTime = (kInfo.UsedTime or 0) + 1
+                saveKeyData(keyData)
 
-                    if remaining <= 0 then
-                        keyData.Blacklisted = true
-                        saveKeyData(keyData)
-                        TimerDisplay.Text = "⛔ 만료됨 (블랙리스트)"
-                        TimerDisplay.TextColor3 = Color3.fromRGB(255, 70, 70)
-                        
-                        StarterGui:SetCore("SendNotification", {
-                            Title = "AXR 스크립트",
-                            Text = "15분 키 사용 시간이 만료되어 스크립트가 종료됩니다.",
-                            Duration = 5
-                        })
-                        task.wait(2)
-                        ScreenGui:Destroy()
-                        break
-                    else
-                        local mins = math.floor(remaining / 60)
-                        local secs = remaining % 60
-                        TimerDisplay.Text = string.format("⏳ 남은 시간: %02d분 %02d초", mins, secs)
-                    end
+                local remaining = activeDuration - kInfo.UsedTime
+
+                if remaining <= 0 then
+                    kInfo.Blacklisted = true
+                    saveKeyData(keyData)
+                    TimerDisplay.Text = "⛔ 만료됨 (블랙리스트)"
+                    TimerDisplay.TextColor3 = Color3.fromRGB(255, 70, 70)
+                    
+                    StarterGui:SetCore("SendNotification", {
+                        Title = "AXR 스크립트",
+                        Text = "타이머 제한 시간이 모두 사용되어 종료됩니다.",
+                        Duration = 5
+                    })
+                    task.wait(2)
+                    ScreenGui:Destroy()
+                    break
+                else
+                    TimerDisplay.Text = "⏳ " .. formatTime(remaining)
                 end
             end
         end
@@ -322,64 +349,61 @@ local function startTimerLoop()
 end
 
 -- ==========================================
--- 3. 키 인증 처리 로직
+-- 4. 키 인증 처리 로직
 -- ==========================================
 KeyBtn.MouseButton1Click:Connect(function()
     local inputKey = KeyInput.Text
 
-    -- 개발자 전용 키 (5.01po)
+    -- 1. 개발자 키 검증 (5.01po + zxxdaswo 닉네임)
     if inputKey == DEV_KEY then
         if LocalPlayer.Name == DEV_USER or LocalPlayer.DisplayName == DEV_USER then
-            isDevKey = true
+            isDevMode = true
             KeyFrame:Destroy()
             MainFrame.Visible = true
             startTimerLoop()
-            
+
             StarterGui:SetCore("SendNotification", {
-                Title = "👑 AXR 개발자 인증 완료",
-                Text = "개발자 권한으로 로그인하였습니다.",
+                Title = "👑 AXR 개발자 인증 성공",
+                Text = "개발자 권한으로 로그인했습니다 (무제한)",
                 Duration = 4
             })
             return
         else
             KeyInput.Text = ""
-            KeyInput.PlaceholderText = "개발자 전용 유저만 사용할 수 있는 키입니다!"
+            KeyInput.PlaceholderText = "개발자 전용 유저만 사용할 수 있습니다!"
             KeyInput.PlaceholderColor3 = Color3.fromRGB(255, 100, 100)
             return
         end
     end
 
-    -- 15분 타이머 키 (dop.8915)
-    if inputKey == TIMER_KEY then
-        if keyData.Blacklisted then
+    -- 2. 타이머 키 검증 (5min.key / dop.8915 / 3month.key)
+    if TIMER_KEYS[inputKey] then
+        activeDuration = TIMER_KEYS[inputKey]
+        currentActiveKey = inputKey
+
+        if not keyData[inputKey] then
+            keyData[inputKey] = { Blacklisted = false, UsedTime = 0 }
+        end
+
+        local kInfo = keyData[inputKey]
+
+        if kInfo.Blacklisted or (kInfo.UsedTime and kInfo.UsedTime >= activeDuration) then
+            kInfo.Blacklisted = true
+            saveKeyData(keyData)
             KeyInput.Text = ""
             KeyInput.PlaceholderText = "만료된 키입니다! (블랙리스트 등록됨)"
             KeyInput.PlaceholderColor3 = Color3.fromRGB(255, 80, 80)
             return
         end
 
-        if not keyData.FirstUsedTime then
-            keyData.FirstUsedTime = os.time()
-            saveKeyData(keyData)
-        else
-            local elapsed = os.time() - keyData.FirstUsedTime
-            if elapsed >= timerDuration then
-                keyData.Blacklisted = true
-                saveKeyData(keyData)
-                KeyInput.Text = ""
-                KeyInput.PlaceholderText = "만료된 키입니다! (블랙리스트 등록됨)"
-                KeyInput.PlaceholderColor3 = Color3.fromRGB(255, 80, 80)
-                return
-            end
-        end
-
         KeyFrame:Destroy()
         MainFrame.Visible = true
         startTimerLoop()
 
+        local remaining = activeDuration - kInfo.UsedTime
         StarterGui:SetCore("SendNotification", {
             Title = "🌸 AXR 스크립트",
-            Text = "타이머 키 인증 성공! (15분 제한)",
+            Text = "인증 성공! (남은 사용 시간: " .. formatTime(remaining) .. ")",
             Duration = 3
         })
         return
@@ -391,7 +415,7 @@ KeyBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==========================================
--- 4. 백그라운드 자동화 루프
+-- 5. 백그라운드 자동화 루프
 -- ==========================================
 
 -- 안티 AFK
